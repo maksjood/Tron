@@ -1,0 +1,3 @@
+pytron-venv/
+*.pyc
+*.vscode
