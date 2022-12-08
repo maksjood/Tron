@@ -1,18 +1,28 @@
+from dataclasses import dataclass
 from enum import Enum
 from tronpy import Tron
 from tronpy.providers import HTTPProvider
 from tronpy.keys import PrivateKey
 
-TRONGRID_URI = "https://api.trongrid.io/"
-TRONGRID_APIKEY = '767b77ae-fbd7-498d-a86d-724b6e04ea32'
+@dataclass
+class Coin:
+    contract: str
+    decimals: int
 
-class Contract(Enum):
-    USDT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+class TestCoins(Enum):
+    USDT = Coin(contract='TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj', decimals=6)
+    TRX = Coin(contract='', decimals=6)
+
+class Coins(Enum):
+    USDT = Coin(contract='TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', decimals=6)
+    TRX = Coin(contract='', decimals=6, )
+
 
 class TronManager:
 
-    def __init__(self, private_key:str, node_uri:str, node_api_key:str, node_timeout:float=10.0, test_net=False, proxies:dict=None) -> None:
-        if test_net:
+    def __init__(self, private_key:str, node_uri:str, node_api_key:str, node_timeout:float=10.0, test=False, proxies:dict=None) -> None:
+        self.test = test
+        if test:
             self._client = Tron(network='nile')
         else:
             provider = HTTPProvider(endpoint_uri=node_uri, timeout=node_timeout, api_key=node_api_key)
@@ -33,38 +43,34 @@ class TronManager:
         txn = txn.build().sign(self._private_key).broadcast().wait()
         return txn
 
-    def send_token(self, amount:float, to_address:str, memo:str=None, coin:str=None):
-        '''if no `coin` assigned, default network token (tron) is considered'''
-        if not coin:
-            sun = amount * 1_000_000
-            if not sun.is_integer():
-                raise Exception('"amount" must not have more that 6 decimal digits')
-            return self._send_tron(amount=int(sun), to_address=to_address, memo=memo)
+    def _get_coin(self, coin: str) -> 'Coin':
+        return TestCoins[coin].value if self.test else Coins[coin].value
 
-proxies = {'http': '127.0.0.1:9998', 'https': '127.0.0.1:9998'}
-nile_priv_key = '0ef65b198e9c235688bf1f9b216a42d121f1c9ce6aa69d2b81dc34a1ab2107bc'
-trm = TronManager(private_key=nile_priv_key, node_uri='', node_api_key='', test_net=True)
-# trm = TronManager(private_key='', node_uri=TRONGRID_URI, node_api_key=TRONGRID_APIKEY, test_net=False)
-txm = trm.send_token(amount=10000.0, to_address='TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA')
-# trm._client.get_transaction()
+    def send_token(self, coin_code:str, amount:float, to_address:str, memo:str=None, fee_limit:int=None):
+        '''`amount` in large coin unit. `fee_limit` in SUN'''
+        coin = self._get_coin(coin_code)
+        tx_value = amount * 10**coin.decimals
+        if not tx_value.is_integer():
+            raise Exception(f'"amount" must not have more that {coin.decimals} decimal digits')
+        tx_value = int(tx_value)
+        if not coin.contract:
+            txn = self._client.trx.transfer(from_=self._address, to=to_address, amount=amount)
+        else:
+            contract = self._client.get_contract(coin.contract)
+            txn = contract.functions.transfer(to_address, tx_value).with_owner(self._address)
+        if memo:
+            txn = txn.memo(memo)
+        if fee_limit:
+            txn = txn.fee_limit(fee_limit)
+        txn = txn.build().sign(self._private_key).broadcast().wait()
+        if txn.get('result', '')=='FAILED':
+            # if b'transfer amount exceeds balance' in bytes.fromhex(txm['contractResult'][0])
+            return False, txn
+        return True, txn
 
-# tether_contract = client.get_contract(USDT)
-# print(tether_contract.functions.symbol())
-
-
-# # Private key of TJzXt1sZautjqXnpjQT4xSCBHNSYgBkDr3
-# priv_key = 
-
-# txn = (
-#     client.trx.transfer("TJzXt1sZautjqXnpjQT4xSCBHNSYgBkDr3", "TVjsyZ7fYF3qLF6BQgPmTEZy1xrNNyVAAA", 1_000)
-#     .memo("test memo")
-#     .build()
-#     .inspect()
-#     .sign(priv_key)
-#     .broadcast()
-# )
-
-# print(txn)
-# # > {'result': True, 'txid': '5182b96bc0d74f416d6ba8e22380e5920d8627f8fb5ef5a6a11d4df030459132'}
-# print(txn.wait())
-# # > {'id': '5182b96bc0d74f416d6ba8e22380e5920d8627f8fb5ef5a6a11d4df030459132', 'blockNumber': 6415370, 'blockTimeStamp': 1591951155000, 'contractResult': [''], 'receipt': {'net_usage': 283}}
+    def get_balance(self, coin_code:str):
+        coin = self._get_coin(coin_code)
+        if not coin.contract:
+            return self._client.get_account_balance(self._address)
+        else:
+            return self._client.get_contract(coin.contract).functions.balanceOf(self._address)
